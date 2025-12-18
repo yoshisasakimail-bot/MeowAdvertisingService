@@ -1,87 +1,125 @@
 import os
+import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# --- Configuration ---
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-GOOGLE_SHEET_NAME = "Your_Sheet_Name"
-JSON_KEYFILE = "service_account.json" # Google Service Account JSON file
+# --- Config (Environment Variables) ---
+TOKEN = os.environ.get('BOT_TOKEN')
+SHEET_ID = os.environ.get('SHEET_ID')
+SERVICE_ACCOUNT_JSON = os.environ.get('GSPREAD_SERVICE_ACCOUNT')
 
-# --- Google Sheets Setup ---
+# --- Google Sheets Connection ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_KEYFILE, scope)
-client = gspread.authorize(creds)
-sheet = client.open(GOOGLE_SHEET_NAME).sheet1
 
-# --- Handlers ---
-async def start(update: update, context: ContextTypes.DEFAULT_TYPE):
-    # Reply Keyboard with "Advertising Service"
+try:
+    if SERVICE_ACCOUNT_JSON:
+        creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    else:
+        # Local development backup
+        creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+    
+    client = gspread.authorize(creds)
+    spreadsheet = client.open_by_key(SHEET_ID)
+    user_sheet = spreadsheet.get_worksheet(0)    # Sheet 1: User Data
+    payment_sheet = spreadsheet.get_worksheet(1) # Sheet 2: Payment Data
+except Exception as e:
+    print(f"Connection Error: {e}")
+
+# --- Helper Functions ---
+
+def get_payment_details():
+    """Sheet 2 မှ ငွေလွဲရန် အချက်အလက်ကို ဆွဲထုတ်ခြင်း"""
+    try:
+        data = payment_sheet.get_all_values()
+        if len(data) > 1:
+            phone = data[1][0] # Cell A2
+            name = data[1][1]  # Cell B2
+            return f"💰 **Payment Methods**\n\nName: {name}\nPhone: {phone}\n\nPlease send a screenshot of your receipt after payment."
+        return "No payment info found in Google Sheets."
+    except:
+        return "System error: Could not fetch payment data."
+
+async def show_services(update: Update, is_callback=False):
+    """ဝန်ဆောင်မှု Button ၅ ခုကို ပြသခြင်း"""
+    buttons = [
+        [InlineKeyboardButton("Advertising Info", callback_data='info')],
+        [InlineKeyboardButton("Advertising Setting", callback_data='setting')],
+        [InlineKeyboardButton("Users Info", callback_data='users')],
+        [InlineKeyboardButton("Payment Method", callback_data='payment')],
+        [InlineKeyboardButton("Back to Menu", callback_data='back_to_menu')]
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    text = "Select a service from the list below:"
+    
+    if is_callback:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+# --- Command Handlers ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["Advertising Service"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
     await update.message.reply_text(
-        "Welcome! Please select a service below:",
+        "Welcome! Press the button below to start.",
         reply_markup=reply_markup
     )
 
-async def handle_message(update: update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    
-    if text == "Advertising Service":
-        # Save User Info to Google Sheet
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "Advertising Service":
+        # Google Sheet ထဲသို့ User Data သိမ်းဆည်းခြင်း
         user = update.effective_user
-        sheet.append_row([user.id, user.first_name, user.username])
+        try:
+            user_sheet.append_row([str(user.id), user.first_name, f"@{user.username}"])
+        except:
+            pass # Google Sheet Error ဖြစ်လျှင်လည်း Bot ဆက်ပတ်နိုင်ရန်
         
-        # Inline Buttons
-        buttons = [
-            [InlineKeyboardButton("Advertising Info", callback_data='info')],
-            [InlineKeyboardButton("Advertising Setting", callback_data='setting')],
-            [InlineKeyboardButton("Users Info", callback_data='users')],
-            [InlineKeyboardButton("Payment Method", callback_data='payment')],
-            [InlineKeyboardButton("Back to Menu", callback_data='back_to_menu')]
-        ]
-        reply_markup = InlineKeyboardMarkup(buttons)
-        await update.message.reply_text("Our Services:", reply_markup=reply_markup)
+        await show_services(update)
 
-async def button_click(update: update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    back_button = [[InlineKeyboardButton("Back", callback_data='back_to_services')]]
-    reply_markup = InlineKeyboardMarkup(back_button)
+    back_btn = [[InlineKeyboardButton("Back", callback_data='back_to_list')]]
+    reply_markup = InlineKeyboardMarkup(back_btn)
 
     if query.data == 'info':
-        await query.edit_message_text("This is Advertising Info section.", reply_markup=reply_markup)
+        await query.edit_message_text("ℹ️ **Advertising Info**\nThis is where you explain your services.", reply_markup=reply_markup)
+    
     elif query.data == 'setting':
-        await query.edit_message_text("This is Advertising Setting section.", reply_markup=reply_markup)
+        await query.edit_message_text("⚙️ **Advertising Setting**\nManage your campaign settings here.", reply_markup=reply_markup)
+    
     elif query.data == 'users':
-        await query.edit_message_text("This is Users Info section.", reply_markup=reply_markup)
+        await query.edit_message_text(f"👤 **User Info**\nYour ID: {query.from_user.id}\nStatus: Recorded.", reply_markup=reply_markup)
+    
     elif query.data == 'payment':
-        await query.edit_message_text("This is Payment Method section.", reply_markup=reply_markup)
+        msg = get_payment_details()
+        await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    elif query.data == 'back_to_list':
+        await show_services(update, is_callback=True)
+    
     elif query.data == 'back_to_menu':
-        await query.message.reply_text("Main Menu", reply_markup=ReplyKeyboardMarkup([["Advertising Service"]], resize_keyboard=True))
-    elif query.data == 'back_to_services':
-        # Return to the 5 buttons
-        buttons = [
-            [InlineKeyboardButton("Advertising Info", callback_data='info')],
-            [InlineKeyboardButton("Advertising Setting", callback_data='setting')],
-            [InlineKeyboardButton("Users Info", callback_data='users')],
-            [InlineKeyboardButton("Payment Method", callback_data='payment')],
-            [InlineKeyboardButton("Back to Menu", callback_data='back_to_menu')]
-        ]
-        await query.edit_message_text("Our Services:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.message.reply_text("Returning to main menu...", reply_markup=ReplyKeyboardMarkup([["Advertising Service"]], resize_keyboard=True))
 
-# --- Main Function ---
+# --- Application Setup ---
+
 def main():
+    if not TOKEN:
+        print("Error: BOT_TOKEN not found!")
+        return
+
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(button_click))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CallbackQueryHandler(handle_buttons))
     
-    print("Bot is running...")
+    print("Bot is running perfectly...")
     app.run_polling()
 
 if __name__ == '__main__':
