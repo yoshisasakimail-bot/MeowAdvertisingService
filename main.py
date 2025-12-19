@@ -7,113 +7,134 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from flask import Flask
 import threading
 
-# --- Render အတွက် Flask Server အသေးစား (Port Error မတက်စေရန်) ---
+# --- Render Setup ---
 server = Flask(__name__)
-
 @server.route('/')
-def home():
-    return "Bot is Running"
+def home(): return "Bot is Running"
 
 def run_flask():
-    # Render က ပေးတဲ့ Port ကို သုံးမယ်၊ မရှိရင် 8080 သုံးမယ်
     port = int(os.environ.get("PORT", 8080))
     server.run(host='0.0.0.0', port=port)
 
-# --- Config (Environment Variables) ---
+# --- Config & Google Sheets ---
 TOKEN = os.environ.get('BOT_TOKEN')
 SHEET_ID = os.environ.get('SHEET_ID')
 SERVICE_ACCOUNT_JSON = os.environ.get('GSPREAD_SERVICE_ACCOUNT')
 
-# --- Google Sheets Connection ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+client = gspread.authorize(creds)
+spreadsheet = client.open_by_key(SHEET_ID)
 
-try:
-    if SERVICE_ACCOUNT_JSON:
-        creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        spreadsheet = client.open_by_key(SHEET_ID)
-        user_sheet = spreadsheet.get_worksheet(0)
-        payment_sheet = spreadsheet.get_worksheet(1)
-    else:
-        print("Missing GSPREAD_SERVICE_ACCOUNT variable")
-except Exception as e:
-    print(f"Connection Error: {e}")
+user_sheet = spreadsheet.get_worksheet(0)    # Sheet1: Users
+payment_sheet = spreadsheet.get_worksheet(1) # Sheet2: Payment Info
+admin_sheet = spreadsheet.get_worksheet(2)   # Sheet3: Admin Settings (အသစ်)
 
-# --- Bot Functions ---
+# --- Helper Functions ---
 
-def get_payment_details():
+def get_admin_id():
+    """Sheet3 ရဲ့ A2 Cell ကနေ Admin ID ကို ဖတ်ယူခြင်း"""
     try:
-        data = payment_sheet.get_all_values()
-        if len(data) > 1:
-            phone = data[1][0]
-            name = data[1][1]
-            return f"💰 **Payment Methods**\n\nName: {name}\nPhone: {phone}\n\nPlease send a screenshot of your receipt after payment."
-        return "No payment info found."
+        val = admin_sheet.cell(2, 1).value
+        return int(val) if val else None
     except:
-        return "Error fetching payment data."
+        return None
 
-async def show_services(update: Update, is_callback=False):
-    buttons = [
-        [InlineKeyboardButton("Advertising Info", callback_data='info')],
-        [InlineKeyboardButton("Advertising Setting", callback_data='setting')],
-        [InlineKeyboardButton("Users Info", callback_data='users')],
-        [InlineKeyboardButton("Payment Method", callback_data='payment')],
-        [InlineKeyboardButton("Back to Menu", callback_data='back_to_menu')]
-    ]
-    reply_markup = InlineKeyboardMarkup(buttons)
-    text = "Select a service from the list below:"
-    if is_callback:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
+def is_member(user_id):
+    try:
+        cell = user_sheet.find(str(user_id))
+        row = user_sheet.row_values(cell.row)
+        return len(row) >= 4 and row[3] == "Member"
+    except: return False
+
+def get_main_keyboard(user_id):
+    buttons = [["Meow Advertising service"]]
+    if is_member(user_id):
+        buttons.append(["Advertising Ads"])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+# --- Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["Advertising Service"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("Welcome! Press the button below.", reply_markup=reply_markup)
+    user = update.effective_user
+    welcome_text = f"Hello {user.first_name}, Meow Advertising service မှ ကြိုဆိုပါတယ်။"
+    await update.message.reply_text(welcome_text, reply_markup=get_main_keyboard(user.id))
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "Advertising Service":
-        user = update.effective_user
-        try:
-            user_sheet.append_row([str(user.id), user.first_name, f"@{user.username}"])
-        except:
-            pass
-        await show_services(update)
+    text = update.message.text
+    user = update.effective_user
+
+    if text == "Meow Advertising service":
+        buttons = [
+            [InlineKeyboardButton("Advertising Service About", callback_data='about')],
+            [InlineKeyboardButton("User Info", callback_data='user_info')],
+            [InlineKeyboardButton("Payment Method", callback_data='payment_list')]
+        ]
+        await update.message.reply_text("ဝန်ဆောင်မှုများ ရယူရန် ရွေးချယ်ပါ -", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif text == "Advertising Ads":
+        if is_member(user.id):
+            await update.message.reply_text("Welcome to Member Ads Area! 🎉")
+        else:
+            await update.message.reply_text("သင်သည် Member မဟုတ်သေးပါ။")
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    back_btn = [[InlineKeyboardButton("Back", callback_data='back_to_list')]]
-    reply_markup = InlineKeyboardMarkup(back_btn)
 
-    if query.data == 'info':
-        await query.edit_message_text("ℹ️ Advertising Info section.", reply_markup=reply_markup)
-    elif query.data == 'setting':
-        await query.edit_message_text("⚙️ Advertising Setting section.", reply_markup=reply_markup)
-    elif query.data == 'users':
-        await query.edit_message_text(f"👤 Your ID: {query.from_user.id}", reply_markup=reply_markup)
-    elif query.data == 'payment':
-        await query.edit_message_text(get_payment_details(), reply_markup=reply_markup, parse_mode="Markdown")
-    elif query.data == 'back_to_list':
-        await show_services(update, is_callback=True)
-    elif query.data == 'back_to_menu':
-        await query.message.reply_text("Main Menu", reply_markup=ReplyKeyboardMarkup([["Advertising Service"]], resize_keyboard=True))
+    if query.data == 'about':
+        about_text = "📖 **Service Guide**\nLv 1 မှ Lv 3 အထိ အသုံးပြုပုံရှင်းလင်းချက်...\n(ဒီနေရာမှာ စိတ်ကြိုက်စာရေးပါ)"
+        await query.edit_message_text(about_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='main_services')]]))
 
+    elif query.data == 'payment_list':
+        prices = [
+            [InlineKeyboardButton("Lv 1 - 5000 MMK", callback_data='pay_lv1')],
+            [InlineKeyboardButton("Lv 2 - 10000 MMK", callback_data='pay_lv2')],
+            [InlineKeyboardButton("Lv 3 - 20000 MMK", callback_data='pay_lv3')],
+            [InlineKeyboardButton("Back", callback_data='main_services')]
+        ]
+        await query.edit_message_text("ဈေးနှုန်းများ ရွေးချယ်ပါ -", reply_markup=InlineKeyboardMarkup(prices))
+
+    elif query.data.startswith('pay_lv'):
+        lv = query.data.replace('pay_', '')
+        # Payment info ကိုလည်း Sheet2 ကနေ ဆွဲယူနိုင်ပါတယ်
+        pay_info = f"💳 **Payment ({lv.upper()})**\n\nKBZ Pay/Wave: 09xxxxxx\nName: Admin Name\n\nငွေလွှဲပြေစာ ပို့ပေးပါ။"
+        await query.edit_message_text(pay_info, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='payment_list')]]))
+
+    elif query.data == 'main_services':
+        buttons = [[InlineKeyboardButton("Advertising Service About", callback_data='about')],
+                   [InlineKeyboardButton("User Info", callback_data='user_info')],
+                   [InlineKeyboardButton("Payment Method", callback_data='payment_list')]]
+        await query.edit_message_text("ဝန်ဆောင်မှုများ ရယူရန် ရွေးချယ်ပါ -", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ပြေစာကို Sheet ထဲက Admin ID ထံ ပို့ပေးခြင်း"""
+    if update.message.photo:
+        admin_id = get_admin_id()
+        if not admin_id:
+            await update.message.reply_text("Error: Admin မသတ်မှတ်ရသေးပါ။")
+            return
+
+        user = update.effective_user
+        caption = f"📩 **New Payment Receipt**\nFrom: {user.first_name}\nID: `{user.id}`\n\nSheet တွင် Status ကို 'Member' ဟု ပြောင်းပေးပါ။"
+        
+        await context.bot.send_photo(chat_id=admin_id, photo=update.message.photo[-1].file_id, caption=caption, parse_mode="Markdown")
+        await update.message.reply_text("ပြေစာကို Admin ထံ ပို့လိုက်ပါပြီ။ စစ်ဆေးပြီးပါက Member Ads ခလုတ် ပေါ်လာပါမည်။")
+
+# --- Main ---
 def main():
-    # Flask Server ကို thread တစ်ခုနဲ့ background မှာ run မယ်
     threading.Thread(target=run_flask, daemon=True).start()
-
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
     app.add_handler(CallbackQueryHandler(handle_buttons))
     
-    print("Bot is starting...")
+    print("Bot is started with Sheet-based Admin ID.")
     app.run_polling()
 
 if __name__ == '__main__':
     main()
-
-
+    
