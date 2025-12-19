@@ -10,9 +10,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # --- Render Web Service Setup ---
 server = Flask(__name__)
 @server.route('/')
-def home(): return "Bot is Active"
+def home(): 
+    return "Bot is Active"
 
 def run_flask():
+    # Render တွင် Deploy အောင်မြင်ရန် PORT ကို ပတ်ဝန်းကျင်မှ ဖတ်ယူခြင်း
     port = int(os.environ.get("PORT", 8080))
     server.run(host='0.0.0.0', port=port)
 
@@ -54,6 +56,7 @@ def is_member(user_id):
     try:
         cell = user_sheet.find(str(user_id))
         row = user_sheet.row_values(cell.row)
+        # Column D တွင် Member ဟု ရှိမရှိ စစ်ဆေးခြင်း
         return len(row) >= 4 and row[3].strip().lower() == "member"
     except: return False
 
@@ -112,14 +115,17 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data.startswith('pay_lv'):
         lv = query.data.replace('pay_', '').upper()
-        # payment tab မှ A2 နှင့် B2 ကို ဖတ်ယူမည်
         try:
-            pay_data = payment_sheet.get_all_values()
-            phone = pay_data[1][0]
-            name = pay_data[1][1]
-            pay_msg = f"💳 **Payment for {lv}**\n\nKBZ/Wave: {phone}\nName: {name}\n\nငွေလွှဲပြေစာ ပို့ပေးပါ။"
-        except:
-            pay_msg = "Payment info updating..."
+            # တိုက်ရိုက် Cell မှ ဖတ်ခြင်းဖြင့် ပိုမိုမြန်ဆန်စေသည်
+            phone = payment_sheet.acell('A2').value
+            name = payment_sheet.acell('B2').value
+            
+            if phone and name:
+                pay_msg = f"💳 **Payment for {lv}**\n\nKBZ/Wave: `{phone}`\nName: {name}\n\nငွေလွှဲပြေစာ ပို့ပေးပါ။"
+            else:
+                pay_msg = "❌ Sheet ထဲတွင် Payment အချက်အလက် မရှိသေးပါ။"
+        except Exception:
+            pay_msg = "❌ Payment info ရယူရာတွင် အမှားအယွင်းရှိနေပါသည်။"
         
         await query.edit_message_text(pay_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data='payment_list')]]), parse_mode="Markdown")
 
@@ -143,13 +149,18 @@ async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Startup ---
 def main():
+    # Web Port Scan ကို ကျော်ဖြတ်ရန် Flask Server ကို သီးခြား Thread ဖြင့် run သည်
     threading.Thread(target=run_flask, daemon=True).start()
+    
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
     app.add_handler(CallbackQueryHandler(handle_buttons))
-    app.run_polling()
+    
+    # drop_pending_updates=True ထည့်ခြင်းဖြင့် Conflict Error ကို ဖြေရှင်းသည်
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
